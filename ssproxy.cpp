@@ -707,7 +707,7 @@ protected:
                 return static_cast<boost::uint16_t>(this->command[0]);
             }
 
-            constexpr inline boost::uint32_t get_start_date(void)
+            constexpr inline boost::uint32_t get_start_data(void)
             const noexcept {
                 return sizeof(struct packet_header_s);
             }
@@ -739,7 +739,7 @@ protected:
               << "Command: " << std::hex << "0x" << pkt_hdr->get_command()
               << "): ";
 
-        std::for_each(d + pkt_hdr->get_start_date(), d + s, [&l](auto x) {
+        std::for_each(d + pkt_hdr->get_start_data(), d + s, [&l](auto x) {
             std::cout << x;
             l << x;
         });

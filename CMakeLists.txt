@@ -21,7 +21,7 @@
 
 cmake_minimum_required(VERSION 2.8)
 
-project(proxy)
+project(ssproxy)
 
 set(SOURCES
     ssproxy.cpp

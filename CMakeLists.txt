@@ -43,4 +43,8 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} \
 
 include_directories(${HEADERS_DIRECTORIES})
 
+find_package(Threads)
+
 add_executable(${PROJECT_NAME} ${SOURCES})
+
+target_link_libraries(${PROJECT_NAME} ${CMAKE_THREAD_LIBS_INIT})

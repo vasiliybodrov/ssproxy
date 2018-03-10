@@ -29,7 +29,7 @@
  * ************************************************************************** */
 
 #include <map>
-
+#include <deque>
 #include <algorithm>
 #include <numeric>
 #include <fstream>
@@ -43,6 +43,7 @@
 #include <random>
 #include <functional>
 #include <thread>
+#include <mutex>
 
 #include <cstdlib>
 #include <cstring>
@@ -73,7 +74,7 @@
 #endif // PROXY_TCP_PORT
 
 #ifndef SERVER_TCP_PORT
-    #define SERVER_TCP_PORT 7777
+    #define SERVER_TCP_PORT 3306
 #endif // SERVER_TCP_PORT
 
 #ifndef SERVER_IP
@@ -81,7 +82,7 @@
 #endif // SERVER_IP
 
 #ifndef BUFFER_SIZE
-    #define BUFFER_SIZE 1024
+    #define BUFFER_SIZE 2048
 #endif // BUFFER_SIZE
 
 #ifndef POLL_TIMEOUT
@@ -116,7 +117,9 @@ class proxy : public Iproxy {
 public:
     typedef proxy self;
 
-    virtual ~proxy(void) = default;
+    virtual ~proxy(void) {
+        this->logger.join();
+    }
 
     ///
     /// \brief proxy
@@ -131,7 +134,8 @@ public:
         server_port(SERVER_TCP_PORT),
         server_ip(SERVER_IP),
         compress_array(false),
-        end_work(false) {
+        end_work(false),
+        logger(boost::bind(&self::logger_handler, this)) {
 
         int flags = 0;
         int on = 1;
@@ -179,6 +183,8 @@ public:
         this->fds[this->nfds].fd = this->listen_sd;
         this->fds[this->nfds].events = POLLIN;
         this->nfds++;
+
+        std::thread logger();
     }
 
     ///
@@ -280,6 +286,21 @@ public:
 protected:
     typedef std::map<int, boost::uint32_t> counter_t;
 
+    typedef unsigned char data_value_t;
+    typedef std::vector<unsigned char> data_value_container_t;
+    typedef std::deque<data_value_container_t> data_t;
+
+
+    inline bool get_addr(int sd, struct sockaddr_in& addr) const noexcept {
+        socklen_t addr_len  = sizeof(addr);
+
+        int rc = ::getsockname(sd,
+                               reinterpret_cast<struct sockaddr*>(&addr),
+                               &addr_len);
+
+        return (rc >= 0);
+    }
+
     ///
     /// \brief client_handler
     /// \param i
@@ -289,7 +310,9 @@ protected:
         return this->common_handler(i, i + 1,
                              this->client_counter_recv,
                              this->server_counter_sent,
-                             boost::bind(&self::close_socket_client, this, i));
+                             boost::bind(&self::close_socket_client, this, i),
+                             boost::bind(&self::send_to_logger,
+                                         this, _1, _2, _3));
     }
 
     ///
@@ -301,7 +324,9 @@ protected:
         return this->common_handler(i, i - 1,
                              this->server_counter_recv,
                              this->client_counter_sent,
-                             boost::bind(&self::close_socket_server, this, i));
+                             boost::bind(&self::close_socket_server, this, i),
+                             boost::bind(&self::send_to_logger_mock,
+                                         this, _1, _2, _3));
     }
 
     ///
@@ -313,11 +338,11 @@ protected:
     /// \param fc
     /// \return
     ///
-    template<class F>
+    template<class FC, class FL>
     inline bool common_handler(int i1, int i2,
                                counter_t& crecv,
                                counter_t& csent,
-                               F fc) {
+                               FC fc, FL fl) {
         if((fds[i1].revents & POLLIN) &&
            (fds[i2].revents & POLLOUT)) {
 
@@ -356,9 +381,18 @@ protected:
                 return false;
             }
             else {
+                struct sockaddr_in addr;
+                constexpr socklen_t const addr_size = sizeof(addr);
+
+                std::fill_n(reinterpret_cast<char*>(&addr), addr_size, '\0');
+
                 len = rc;
 
                 crecv[fds[i1].fd] += len;
+
+                this->get_addr(fds[i2].fd, addr);
+
+                fl(addr, buffer, len);
 
                 this->send_data(fds[i2].fd, buffer, len, csent);
             }
@@ -572,6 +606,147 @@ protected:
             }
         }
     }
+
+    inline void send_to_logger_mock(struct sockaddr_in const& client,
+                                    unsigned char const* buffer,
+                                    size_t size) {
+        boost::ignore_unused(client, buffer, size);
+    }
+
+    inline void send_to_logger(struct sockaddr_in const& client,
+                               unsigned char const* buffer,
+                               size_t size) {
+        std::lock_guard<std::mutex> lock(this->data_mutex);
+
+        data_value_container_t v;
+        constexpr size_t const sc = sizeof(client);
+        char const* const c = reinterpret_cast<char const* const>(&client);
+
+        std::copy(c, c + sc, std::back_inserter(v));
+        std::copy(buffer, buffer + size, std::back_inserter(v));
+        this->data.push_back(v);
+    }
+
+    void logger_handler(void) {
+        std::ofstream log("log.txt", std::ofstream::out);
+
+        do {
+            data_value_container_t v;
+
+            [](auto p, auto t, auto f) {
+                p() ? t() : f();
+            }(
+            // predicate (p)
+            [this, &v]() -> bool {
+                std::lock_guard<std::mutex> lock(this->data_mutex);
+                if(!this->data.empty()) {
+                    typename data_t::const_reference _v = this->data.front();
+                    v = std::move(_v);
+                    this->data.pop_front();
+                    return true;
+                }
+                return false;
+            },
+            // Do it if predicate is true (t)
+            [this, &v, &log](){
+                this->data_parser(log, v.data(), v.size());
+            },
+            // Do it if predicate is false (f)
+            [](){
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            });
+        }
+        while(!this->end_work);
+
+        log.close();
+    }
+
+    inline void data_parser(std::ofstream& l,
+                            unsigned char const* d,
+                            size_t s) const {
+        typedef struct packet_header_s {
+            struct sockaddr_in addr;
+            char payload_length[3];
+            char sequence_id[1];
+            char command[1];
+
+            constexpr inline boost::uint16_t get_addr_len(void)
+            const noexcept {
+                return sizeof(struct sockaddr_in);
+            }
+
+            inline char* get_address(void)
+            const noexcept {
+                return inet_ntoa(this->addr.sin_addr);
+            }
+
+            inline boost::uint16_t get_port(void)
+            const noexcept {
+                return ntohs(this->addr.sin_port);
+            }
+
+            constexpr inline boost::uint16_t get_mysql_header_length(void)
+            const noexcept {
+                return 4;
+            }
+
+            inline boost::uint32_t get_payload_length(void)
+            const noexcept {
+                return (this->payload_length[2] << 0x10) |
+                       (this->payload_length[1] << 0x08) |
+                       (this->payload_length[0] << 0x00);
+            }
+
+            inline boost::uint16_t get_sequence_id(void)
+            const noexcept {
+                return static_cast<boost::uint16_t>(this->sequence_id[0]);
+            }
+
+            inline boost::uint16_t get_command(void)
+            const noexcept {
+                return static_cast<boost::uint16_t>(this->command[0]);
+            }
+
+            constexpr inline boost::uint32_t get_start_date(void)
+            const noexcept {
+                return sizeof(struct packet_header_s);
+            }
+
+            inline boost::uint32_t get_data_len(void)
+            const noexcept {
+                return this->get_payload_length() - sizeof(this->command);
+            }
+        } __attribute__((packed)) packet_header_t;
+
+        packet_header_t const* pkt_hdr =
+                reinterpret_cast<packet_header_t const*>(d);
+
+         std::cout << pkt_hdr->get_address() << ":"
+                  << std::dec << pkt_hdr->get_port();
+
+        l << pkt_hdr->get_address() << ":"
+          << std::dec << pkt_hdr->get_port();
+
+        /*
+        boost::int32_t underload = s - pkt_hdr->get_addr_len() -
+                pkt_hdr->get_mysql_header_length() -
+                pkt_hdr->get_payload_length();
+        */
+
+        std::cout << " ("
+              << "Len: " << std::dec << pkt_hdr->get_payload_length() << "; "
+              << "Seq: " << std::dec << pkt_hdr->get_sequence_id() << "; "
+              << "Command: " << std::hex << "0x" << pkt_hdr->get_command()
+              << "): ";
+
+        std::for_each(d + pkt_hdr->get_start_date(), d + s, [&l](auto x) {
+            std::cout << x;
+            l << x;
+        });
+
+        std::cout << std::endl << std::flush;
+        l << std::endl << std::flush;
+    }
 private:
     struct sockaddr_in proxy_addr;
     struct sockaddr_in server_addr;
@@ -594,6 +769,10 @@ private:
 
     counter_t server_counter_sent;
     counter_t server_counter_recv;
+
+    data_t data;
+    mutable std::mutex data_mutex;
+    std::thread logger;
 };
 
 } // namespace proxy_ns

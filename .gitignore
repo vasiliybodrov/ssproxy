@@ -1,1 +1,7 @@
 CMakeLists.txt.user
+Makefile
+cmake_install.cmake
+log.txt
+ssproxy
+CMakeCache.txt
+CMakeFiles

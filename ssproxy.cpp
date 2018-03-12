@@ -33,6 +33,7 @@
 #include <algorithm>
 #include <numeric>
 #include <fstream>
+#include <ostream>
 #include <iostream>
 #include <sstream>
 #include <ios>
@@ -44,6 +45,8 @@
 #include <functional>
 #include <thread>
 #include <mutex>
+#include <exception>
+#include <stdexcept>
 
 #include <cstdlib>
 #include <cstring>
@@ -78,7 +81,7 @@
 #endif // SERVER_TCP_PORT
 
 #ifndef SERVER_IP
-    #define SERVER_IP "192.168.254.1"
+    #define SERVER_IP "127.0.0.1"
 #endif // SERVER_IP
 
 #ifndef BUFFER_SIZE
@@ -93,10 +96,123 @@
     #define MAX_SOCKET_COUNT 200
 #endif // MAX_SOCKET_COUNT
 
+namespace {
+namespace config_ns {
+    template<class PT, class AT>
+    struct config {
+    private:
+        typedef config self;
+    public:
+        virtual ~config(void) = default;
+        config(const config&) = default;
+        config(config&&) = default;
+        config& operator=(config&&) = default;
+        config& operator=(config const&) = default;
+
+        PT proxy_port;
+        PT server_port;
+        AT server_addr;
+
+        ///
+        /// \brief config
+        /// \param pp
+        /// \param sp
+        /// \param sip
+        ///
+        explicit config(PT pp = PROXY_TCP_PORT,
+                        PT sp = SERVER_TCP_PORT,
+                        AT sip = SERVER_IP) :
+        proxy_port(pp),
+        server_port(sp),
+        server_addr(sip) {
+        }
+
+        ///
+        /// \brief get_default_proxy_port
+        /// \return
+        ///
+        constexpr static inline PT get_default_proxy_port(void) noexcept {
+            return PROXY_TCP_PORT;
+        }
+
+        ///
+        /// \brief get_default_server_port
+        /// \return
+        ///
+        constexpr static inline PT get_default_server_port(void) noexcept {
+            return SERVER_TCP_PORT;
+        }
+
+        ///
+        /// \brief get_default_server_addr
+        /// \return
+        ///
+        constexpr static inline AT get_default_server_addr(void) noexcept {
+            return SERVER_IP;
+        }
+
+        ///
+        /// \brief set_proxy_port
+        /// \param value
+        ///
+        void set_proxy_port(PT value) noexcept {
+            this->proxy_port = value;
+        }
+
+        ///
+        /// \brief set_server_port
+        /// \param value
+        ///
+        void set_server_port(PT value) noexcept {
+            this->server_port = value;
+        }
+
+        ///
+        /// \brief set_server_addr
+        /// \param value
+        ///
+        void set_server_addr(AT const& value) noexcept {
+            this->server_addr = value;
+        }
+
+        ///
+        /// \brief get_proxy_port
+        /// \return
+        ///
+        PT get_proxy_port(void) const noexcept {
+            return this->proxy_port;
+        }
+
+        ///
+        /// \brief get_server_port
+        /// \return
+        ///
+        PT get_server_port(void) const noexcept {
+            return this->server_port;
+        }
+
+        ///
+        /// \brief get_server_addr
+        /// \return
+        ///
+        AT get_server_addr(void) const noexcept {
+            return this->server_addr;
+        }
+
+//        friend std::ostream& operator<<(std::ostream& os,
+//                                        config<PT,AT> const& cfg);
+    };
+} // namespace config_ns
+
 ///
 ///
 ///
 namespace proxy_ns {
+
+typedef int port_t;
+typedef std::string addr_t;
+
+typedef config_ns::config<port_t, addr_t> proxy_config;
 
 ///
 /// \brief The Iproxy class
@@ -125,6 +241,8 @@ class proxy : public Iproxy {
 public:
     typedef proxy self;
 
+    proxy(void) = delete;
+
     ///
     /// \brief ~proxy
     ///
@@ -135,15 +253,15 @@ public:
     ///
     /// \brief proxy
     ///
-    proxy(void) :
+    explicit proxy(proxy_config const& cfg) :
         proxy_addr_len(sizeof(this->proxy_addr)),
         server_addr_len(sizeof(this->server_addr)),
         listen_sd(-1),
         nfds(0),
         timeout(POLL_TIMEOUT),
-        proxy_port(PROXY_TCP_PORT),
-        server_port(SERVER_TCP_PORT),
-        server_ip(SERVER_IP),
+        proxy_port(cfg.get_proxy_port()),
+        server_port(cfg.get_server_port()),
+        server_ip(cfg.get_server_addr()),
         compress_array(false),
         end_work(false),
         logger(boost::bind(&self::logger_handler, this)) {
@@ -814,14 +932,140 @@ private:
 } // namespace proxy_ns
 
 ///
+/// \brief The IEproxy class
+///
+class IEproxy : public std::exception {
+protected:
+    IEproxy(void) = default;
+public:
+    virtual char const* what(void) const noexcept {
+        static std::string const msg("IEproxy");
+        return msg.c_str();
+    }
+
+    virtual ~IEproxy(void) = default;
+    IEproxy(const IEproxy&) = default;
+    IEproxy(IEproxy&&) = default;
+    IEproxy& operator=(IEproxy&&) = default;
+    IEproxy& operator=(IEproxy const&) = default;
+};
+
+///
+/// \brief The EInvalidArgument class
+///
+class EInvalidArgument : public IEproxy {
+public:
+    virtual char const* what(void) const noexcept {
+        static std::string const msg("Invalid argument!");
+        return msg.c_str();
+    }
+
+    EInvalidArgument(void) = default;
+    virtual ~EInvalidArgument(void) = default;
+    EInvalidArgument(const EInvalidArgument&) = default;
+    EInvalidArgument(EInvalidArgument&&) = default;
+    EInvalidArgument& operator=(EInvalidArgument&&) = default;
+    EInvalidArgument& operator=(EInvalidArgument const&) = default;
+};
+
+///
+///
+///
+template <class TSrcValue, class TResValue, class TSetter, class TResult = bool>
+TResult set_value(TSrcValue value, TSetter setter, TResValue default_value) {
+    TResValue res_value = default_value;
+    TResult res = true;
+
+    try {
+        res_value = boost::lexical_cast<TResValue>(value);
+    }
+    catch(boost::bad_lexical_cast const& ex) {
+        std::cerr << "Can't set value! ("
+                  << __FILE__
+                  << ":"
+                  << __LINE__
+                  << ")"
+                  << std::endl;
+        std::cerr << ex.what() << std::endl;
+
+        res = false;
+
+        throw;
+    }
+
+    setter(res_value);
+
+    return res;
+}
+
+template<class TArgs, class TCfg = proxy_ns::proxy_config>
+void set_cfg_values1(TCfg& cfg, TArgs values) {
+    ::set_value(values[1], boost::bind(&TCfg::set_proxy_port, &cfg, _1),
+            TCfg::get_default_proxy_port());
+}
+
+template<class TArgs, class TCfg = proxy_ns::proxy_config>
+void set_cfg_values2(TCfg& cfg, TArgs values) {
+    ::set_cfg_values1(cfg, values);
+    ::set_value(values[2], boost::bind(&TCfg::set_server_port, &cfg, _1),
+            TCfg::get_default_server_port());
+}
+
+template<class TArgs, class TCfg = proxy_ns::proxy_config>
+void set_cfg_values3(TCfg& cfg, TArgs values) {
+    ::set_cfg_values2(cfg, values);
+    ::set_value(values[3], boost::bind(&TCfg::set_server_addr, &cfg, _1),
+            TCfg::get_default_server_addr());
+}
+
+std::ostream& operator<<(std::ostream& os, proxy_ns::proxy_config const& cfg) {
+    os << "PROXY_PORT=" << cfg.proxy_port << "; "
+       << "SERVER_PORT=" << cfg.server_port << "; "
+       << "SERVER_ADDR=" << cfg.server_addr;
+    return os;
+}
+
+} // namespace
+
+///
 /// \brief main
 /// \return
-///
+/// \note
+///     argv[0] - program name
+///     argv[1] - proxy port
+///     argv[2] - server port
+///     argv[3] - server ip address
 int main(int argc, char** argv) {
+    using namespace std;
     namespace prx = proxy_ns;
 
+    prx::proxy_config cfg;
+
+    switch(argc) {
+    case 1:
+        cout << "NOTE: You can use: " << argv[0]
+             << " [<PROXY_PORT>"
+             << " <SERVER_PORT>"
+             << " <SERVER_IP>]"
+             << endl << endl;
+        break;
+    case 2:
+        ::set_cfg_values1(cfg, argv);
+        break;
+    case 3:
+        ::set_cfg_values2(cfg, argv);
+        break;
+    case 4:
+        ::set_cfg_values3(cfg, argv);
+        break;
+    default:
+        throw EInvalidArgument();
+    }
+
+    cout << "Args: (" << cfg << ")" << endl << endl;
+
     boost::ignore_unused(argc, argv);
-    boost::scoped_ptr<prx::Iproxy> $(new prx::proxy());
+    boost::scoped_ptr<prx::Iproxy> $(new prx::proxy(cfg));
 
     return $.get()->run();
 }

@@ -85,7 +85,9 @@
 #endif // SERVER_IP
 
 #ifndef BUFFER_SIZE
-    #define BUFFER_SIZE 2048
+    //#define BUFFER_SIZE 2048
+    //#define BUFFER_SIZE 6
+    #define BUFFER_SIZE 200
 #endif // BUFFER_SIZE
 
 #ifndef POLL_TIMEOUT
@@ -205,11 +207,59 @@ namespace config_ns {
 } // namespace config_ns
 
 ///
+/// \brief The addr_container class
+///
+class addr_container {
+public:
+    ///
+    /// \brief addr_container
+    /// \param address
+    ///
+    explicit addr_container(struct sockaddr_in address) : addr(address) {
+    }
+
+    friend bool operator==(addr_container const& l,
+                           addr_container const& r);
+
+    friend bool operator<(addr_container const& l,
+                          addr_container const& r);
+
+    friend bool operator>(addr_container const& l,
+                          addr_container const& r);
+
+    ~addr_container(void) = default;
+    addr_container(addr_container const&) = default;
+    addr_container(addr_container&&) = default;
+    addr_container& operator=(addr_container&&) = default;
+    addr_container& operator=(addr_container const&) = default;
+private:
+    struct sockaddr_in addr;
+};
+
+inline bool operator==(addr_container const& l,
+                       addr_container const& r) {
+    return (l.addr.sin_addr.s_addr == r.addr.sin_addr.s_addr) &&
+           (l.addr.sin_port == r.addr.sin_port);
+}
+
+inline bool operator<(addr_container const& l,
+                      addr_container const& r) {
+    return (l.addr.sin_addr.s_addr < r.addr.sin_addr.s_addr) &&
+           (l.addr.sin_port < r.addr.sin_port);
+}
+
+inline bool operator>(addr_container const& l,
+                      addr_container const& r) {
+    return (l.addr.sin_addr.s_addr > r.addr.sin_addr.s_addr) &&
+           (l.addr.sin_port > r.addr.sin_port);
+}
+
+///
 ///
 ///
 namespace proxy_ns {
 
-typedef int port_t;
+typedef boost::uint16_t port_t;
 typedef std::string addr_t;
 
 typedef config_ns::config<port_t, addr_t> proxy_config;
@@ -254,6 +304,8 @@ public:
     /// \brief proxy
     ///
     explicit proxy(proxy_config const& cfg) :
+        proxy_addr({}),
+        server_addr({}),
         proxy_addr_len(sizeof(this->proxy_addr)),
         server_addr_len(sizeof(this->server_addr)),
         listen_sd(-1),
@@ -264,6 +316,13 @@ public:
         server_ip(cfg.get_server_addr()),
         compress_array(false),
         end_work(false),
+        underloads({}),
+        client_counter_sent({}),
+        client_counter_recv({}),
+        server_counter_sent({}),
+        server_counter_recv({}),
+        data({}),
+        data_mutex(),
         logger(boost::bind(&self::logger_handler, this)) {
 
         int flags = 0;
@@ -327,8 +386,8 @@ public:
             assert(rc >= 0);
 
             if(rc) {
-                int current_size = nfds;
-                for(int i = 0; i < current_size; i++) {
+                nfds_t current_size = nfds;
+                for(nfds_t i = 0; i < current_size; i++) {
                     if(0 == fds[i].revents) {
                         continue;
                     }
@@ -409,11 +468,13 @@ public:
         return EXIT_SUCCESS;
     }
 
-    proxy(const proxy&) = delete;
+    proxy(proxy const&) = delete;
     proxy(proxy&&) = delete;
     proxy& operator=(proxy&&) = delete;
     proxy& operator=(proxy const&) = delete;
 protected:
+    typedef std::map<addr_container, boost::int32_t> underloads_t;
+
     typedef std::map<int, boost::uint32_t> counter_t;
 
     typedef unsigned char data_value_t;
@@ -441,7 +502,7 @@ protected:
     /// \param i
     /// \return
     ///
-    inline bool client_handler(int i) {
+    inline bool client_handler(nfds_t i) {
         return this->common_handler(i, i + 1,
                              this->client_counter_recv,
                              this->server_counter_sent,
@@ -455,7 +516,7 @@ protected:
     /// \param i
     /// \return
     ///
-    inline bool server_handler(int i) {
+    inline bool server_handler(nfds_t i) {
         return this->common_handler(i, i - 1,
                              this->server_counter_recv,
                              this->client_counter_sent,
@@ -474,7 +535,7 @@ protected:
     /// \return
     ///
     template<class FC, class FL>
-    inline bool common_handler(int i1, int i2,
+    inline bool common_handler(nfds_t i1, nfds_t i2,
                                counter_t& crecv,
                                counter_t& csent,
                                FC fc, FL fl) {
@@ -540,7 +601,7 @@ protected:
     /// \brief close_socket_client
     /// \param i
     ///
-    inline void close_socket_client(int i) {
+    inline void close_socket_client(nfds_t i) {
         (void) ::close(fds[i].fd);
         (void) ::close(fds[i + 1].fd);
 
@@ -560,7 +621,7 @@ protected:
     /// \brief close_socket_server
     /// \param i
     ///
-    inline void close_socket_server(int i) {
+    inline void close_socket_server(nfds_t i) {
         (void) ::close(fds[i].fd);
         (void) ::close(fds[i - 1].fd);
 
@@ -584,8 +645,8 @@ protected:
             int rc = 0;
             int on = 1;
             int flags = 0;
-            int new_sd = -1;
-            int new_server_sd = -1;
+            int new_sd = 0;
+            int new_server_sd = 0;
 
             // We have a warning if we use 'Release mode'
             boost::ignore_unused(rc);
@@ -693,10 +754,9 @@ protected:
     inline void send_data(int sd, unsigned char const* buf,
                    size_t len, counter_t& counter) {
         int index = 0;
-        int rc = 0;
 
         do {
-            rc = ::send(sd, &buf[index], len, 0);
+            ssize_t rc = ::send(sd, &buf[index], len, 0);
             if(rc < 0) {
                 if(errno != EWOULDBLOCK &&
                    errno != EAGAIN) {
@@ -714,6 +774,7 @@ protected:
                 }
             }
             else {
+                assert(rc >= 0);
                 counter[sd] += rc;
                 if(static_cast<size_t>(rc) != len) {
                     len = len - rc;
@@ -721,8 +782,10 @@ protected:
                     continue;
                 }
             }
+
+            break;
         }
-        while(false);
+        while(true);
     }
 
     ///
@@ -731,9 +794,9 @@ protected:
     inline void compress(void) {
         if(this->compress_array) {
             this->compress_array = false;
-            for(int i = 0; i < this->nfds;) {
+            for(nfds_t i = 0; i < this->nfds;) {
                 if(this->fds[i].fd == -1) {
-                    for(int j = i; j < this->nfds; j++) {
+                    for(nfds_t j = i; j < this->nfds; j++) {
                         this->fds[j].fd = this->fds[j + 1].fd;
                     }
                     this->nfds--;
@@ -774,7 +837,27 @@ protected:
 
         std::copy(c, c + sc, std::back_inserter(v));
         std::copy(buffer, buffer + size, std::back_inserter(v));
-        this->data.push_back(v);
+        this->data.push_back(std::move(v));
+    }
+
+    ///
+    /// \brief send_to_logger_back
+    /// \param client
+    /// \param buffer
+    /// \param size
+    ///
+    inline void send_to_logger_back(struct sockaddr_in const& client,
+                                    unsigned char const* buffer,
+                                    size_t size) {
+        std::lock_guard<std::mutex> lock(this->data_mutex);
+
+        data_value_container_t v;
+        constexpr size_t const sc = sizeof(client);
+        char const* const c = reinterpret_cast<char const* const>(&client);
+
+        std::copy(c, c + sc, std::back_inserter(v));
+        std::copy(buffer, buffer + size, std::back_inserter(v));
+        this->data.push_front(std::move(v));
     }
 
     ///
@@ -815,6 +898,43 @@ protected:
     }
 
     ///
+    /// \brief is_underload
+    /// \param addr
+    /// \return
+    ///
+    inline bool is_underload(struct sockaddr_in const& addr,
+                             boost::int32_t& len) const {
+        addr_container a(addr);
+        auto res = this->underloads.find(a);
+
+        if(res != this->underloads.end()) {
+            len = res->second;
+            return true;
+        }
+        len = 0;
+        return false;
+    }
+
+    ///
+    /// \brief set_no_underload
+    /// \param addr
+    ///
+    inline void set_no_underload(struct sockaddr_in const& addr) {
+        addr_container a(addr);
+        this->underloads.erase(a);
+    }
+
+    ///
+    /// \brief set_yes_underload
+    /// \param addr
+    ///
+    inline void set_yes_underload(struct sockaddr_in const& addr,
+                                  boost::int32_t len) {
+        addr_container a(addr);
+        this->underloads[a] = len;
+    }
+
+    ///
     /// \brief data_parser
     /// \param l
     /// \param d
@@ -822,16 +942,22 @@ protected:
     ///
     inline void data_parser(std::ofstream& l,
                             unsigned char const* d,
-                            size_t s) const {
+                            size_t s) {
         typedef struct packet_header_s {
             struct sockaddr_in addr;
             char payload_length[3];
             char sequence_id[1];
             char command[1];
+            char payload;
 
             constexpr inline boost::uint16_t get_addr_len(void)
             const noexcept {
                 return sizeof(struct sockaddr_in);
+            }
+
+            inline struct sockaddr_in get_sockaddr(void)
+            const noexcept {
+                return this->addr;
             }
 
             inline char* get_address(void)
@@ -851,9 +977,9 @@ protected:
 
             inline boost::uint32_t get_payload_length(void)
             const noexcept {
-                return (this->payload_length[2] << 0x10) |
-                       (this->payload_length[1] << 0x08) |
-                       (this->payload_length[0] << 0x00);
+                return (0x00FF0000 & (this->payload_length[2] << 0x10)) |
+                       (0x0000FF00 & (this->payload_length[1] << 0x08)) |
+                       (0x000000FF & (this->payload_length[0] << 0x00));
             }
 
             inline boost::uint16_t get_sequence_id(void)
@@ -880,26 +1006,99 @@ protected:
         packet_header_t const* pkt_hdr =
                 reinterpret_cast<packet_header_t const*>(d);
 
-        l << pkt_hdr->get_address() << ":"
-          << std::dec << pkt_hdr->get_port();
+        bool flag_underload = false;
+        boost::int32_t under_len = 0;
+        boost::uint32_t _start = 0;
+        boost::uint32_t _end = 0;
+        boost::int32_t overunderload = 0; // Недополученные данные mysql
+        boost::int32_t useful_size = s - pkt_hdr->get_addr_len(); // Реальные данные
+        boost::int32_t useful_data_size = 0; // Реальные mysql данные
+        boost::int32_t output_data_size = 0; // Сколько данных выводится
 
-        /*
-        boost::int32_t underload = s - pkt_hdr->get_addr_len() -
-                pkt_hdr->get_mysql_header_length() -
-                pkt_hdr->get_payload_length();
-        */
+        // TODO!!! Проблема с одним байтом!!!
+        // Попробовать разнгые размеры буффера
+        if(this->is_underload(pkt_hdr->get_sockaddr(), under_len)) {
+            flag_underload = true;
+            _start = pkt_hdr->get_addr_len();
 
-        l << " ("
-          << "Len: " << std::dec << pkt_hdr->get_payload_length() << "; "
-          << "Seq: " << std::dec << pkt_hdr->get_sequence_id() << "; "
-          << "Command: " << std::hex << "0x" << pkt_hdr->get_command()
-          << "): ";
+            useful_data_size = useful_size;
 
-        std::for_each(d + pkt_hdr->get_start_data(), d + s, [&l](auto x) {
+            overunderload = under_len + useful_data_size;
+
+            output_data_size = (overunderload < 0) ?
+                        useful_data_size :
+                        (useful_data_size - overunderload);
+
+            _end = pkt_hdr->get_addr_len() +
+                   output_data_size;
+
+            if(overunderload >= 0) {
+                this->set_no_underload(pkt_hdr->get_sockaddr());
+            }
+        }
+        else {
+            _start = pkt_hdr->get_start_data();
+
+            useful_data_size = useful_size - pkt_hdr->get_mysql_header_length();
+
+            overunderload = useful_data_size - pkt_hdr->get_payload_length();
+
+            output_data_size = (overunderload < 0) ?
+                        useful_data_size :
+                        (useful_data_size - overunderload);
+
+            _end = pkt_hdr->get_addr_len() +
+                   pkt_hdr->get_mysql_header_length() +
+                   output_data_size + 1;
+        }
+
+        if(overunderload > 0) {
+            // Overload
+            // Данных пришло больше, чем у нас в mysql пакете.
+            // Надо отправить их обратно
+            this->send_to_logger_back(pkt_hdr->get_sockaddr(),
+                                      d + _end, s - _end);
+        }
+        else if(overunderload < 0) {
+            // Underload
+            this->set_yes_underload(pkt_hdr->get_sockaddr(),
+                                    (overunderload));
+        }
+
+//        std::cout << "Underload: " << overunderload << std::endl;
+//        exit(0);
+
+        if(flag_underload) {
+            std::cout          << pkt_hdr->get_address() << ":"
+                                << std::dec << pkt_hdr->get_port()
+                                << ": [" << _end - _start << "]: ";
+        }
+        else {
+            /*
+            l << pkt_hdr->get_address() << ":"
+              << std::dec << pkt_hdr->get_port()
+              << " ("
+              << "Len: " << std::dec << pkt_hdr->get_payload_length() << "; "
+              << "Seq: " << std::dec << pkt_hdr->get_sequence_id() << "; "
+              << "Command: " << std::hex << "0x" << pkt_hdr->get_command()
+              << "): ";
+*/
+            std::cout          << pkt_hdr->get_address() << ":"
+                                << std::dec << pkt_hdr->get_port()
+                                << " ("
+                                << "Len: " << std::dec << pkt_hdr->get_payload_length() << "; "
+                                << "Seq: " << std::dec << pkt_hdr->get_sequence_id() << "; "
+                                << "Command: " << std::hex << "0x" << pkt_hdr->get_command()
+                                << "): [" << _end - _start << "]: ";
+        }
+
+        std::for_each(d + _start, d + _end, [&l](auto x) {
             l << x;
+            std::cout << x;
         });
 
         l << std::endl << std::flush;
+        std::cout << std::endl << std::flush;
     }
 private:
     struct sockaddr_in proxy_addr;
@@ -910,13 +1109,14 @@ private:
 
     int listen_sd;
     struct pollfd fds[2 * MAX_SOCKET_COUNT + 1];
-    int nfds;
+    nfds_t nfds;
     int timeout;
-    int proxy_port;
-    int server_port;
+    boost::uint16_t proxy_port;
+    boost::uint16_t server_port;
     std::string server_ip;
     bool compress_array;
     bool end_work;
+    underloads_t underloads;
 
     counter_t client_counter_sent;
     counter_t client_counter_recv;
@@ -1064,7 +1264,6 @@ int main(int argc, char** argv) {
 
     cout << "Args: (" << cfg << ")" << endl << endl;
 
-    boost::ignore_unused(argc, argv);
     boost::scoped_ptr<prx::Iproxy> $(new prx::proxy(cfg));
 
     return $.get()->run();

@@ -93,12 +93,20 @@
     #define MAX_SOCKET_COUNT 200
 #endif // MAX_SOCKET_COUNT
 
+///
+///
+///
 namespace proxy_ns {
+
 ///
 /// \brief The Iproxy class
 ///
 class Iproxy {
 public:
+    ///
+    /// \brief run
+    /// \return
+    ///
     virtual int run(void) = 0;
 
     virtual ~Iproxy(void) = default;
@@ -117,6 +125,9 @@ class proxy : public Iproxy {
 public:
     typedef proxy self;
 
+    ///
+    /// \brief ~proxy
+    ///
     virtual ~proxy(void) {
         this->logger.join();
     }
@@ -140,6 +151,9 @@ public:
         int flags = 0;
         int on = 1;
         int rc = 0;
+
+        // We have a warning if we use 'Release mode'
+        boost::ignore_unused(rc);
 
         std::fill_n(reinterpret_cast<char*>(&server_addr),
                     proxy_addr_len, '\0');
@@ -183,8 +197,6 @@ public:
         this->fds[this->nfds].fd = this->listen_sd;
         this->fds[this->nfds].events = POLLIN;
         this->nfds++;
-
-        std::thread logger();
     }
 
     ///
@@ -290,7 +302,12 @@ protected:
     typedef std::vector<unsigned char> data_value_container_t;
     typedef std::deque<data_value_container_t> data_t;
 
-
+    ///
+    /// \brief get_addr
+    /// \param sd
+    /// \param addr
+    /// \return
+    ///
     inline bool get_addr(int sd, struct sockaddr_in& addr) const noexcept {
         socklen_t addr_len  = sizeof(addr);
 
@@ -452,6 +469,9 @@ protected:
             int new_sd = -1;
             int new_server_sd = -1;
 
+            // We have a warning if we use 'Release mode'
+            boost::ignore_unused(rc);
+
             struct sockaddr_in client_addr;
             socklen_t client_addr_len = sizeof(client_addr);
 
@@ -607,12 +627,24 @@ protected:
         }
     }
 
+    ///
+    /// \brief send_to_logger_mock
+    /// \param client
+    /// \param buffer
+    /// \param size
+    ///
     inline void send_to_logger_mock(struct sockaddr_in const& client,
                                     unsigned char const* buffer,
                                     size_t size) {
         boost::ignore_unused(client, buffer, size);
     }
 
+    ///
+    /// \brief send_to_logger
+    /// \param client
+    /// \param buffer
+    /// \param size
+    ///
     inline void send_to_logger(struct sockaddr_in const& client,
                                unsigned char const* buffer,
                                size_t size) {
@@ -627,6 +659,9 @@ protected:
         this->data.push_back(v);
     }
 
+    ///
+    /// \brief logger_handler
+    ///
     void logger_handler(void) {
         std::ofstream log("log.txt", std::ofstream::out);
 
@@ -661,6 +696,12 @@ protected:
         log.close();
     }
 
+    ///
+    /// \brief data_parser
+    /// \param l
+    /// \param d
+    /// \param s
+    ///
     inline void data_parser(std::ofstream& l,
                             unsigned char const* d,
                             size_t s) const {
@@ -721,9 +762,6 @@ protected:
         packet_header_t const* pkt_hdr =
                 reinterpret_cast<packet_header_t const*>(d);
 
-         std::cout << pkt_hdr->get_address() << ":"
-                  << std::dec << pkt_hdr->get_port();
-
         l << pkt_hdr->get_address() << ":"
           << std::dec << pkt_hdr->get_port();
 
@@ -733,18 +771,16 @@ protected:
                 pkt_hdr->get_payload_length();
         */
 
-        std::cout << " ("
-              << "Len: " << std::dec << pkt_hdr->get_payload_length() << "; "
-              << "Seq: " << std::dec << pkt_hdr->get_sequence_id() << "; "
-              << "Command: " << std::hex << "0x" << pkt_hdr->get_command()
-              << "): ";
+        l << " ("
+          << "Len: " << std::dec << pkt_hdr->get_payload_length() << "; "
+          << "Seq: " << std::dec << pkt_hdr->get_sequence_id() << "; "
+          << "Command: " << std::hex << "0x" << pkt_hdr->get_command()
+          << "): ";
 
         std::for_each(d + pkt_hdr->get_start_data(), d + s, [&l](auto x) {
-            std::cout << x;
             l << x;
         });
 
-        std::cout << std::endl << std::flush;
         l << std::endl << std::flush;
     }
 private:

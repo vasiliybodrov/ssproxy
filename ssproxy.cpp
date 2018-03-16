@@ -28,6 +28,19 @@
  *         +7 (930) 783-0-783 (Russia)
  * ************************************************************************** */
 
+#ifndef __cplusplus
+    #error This code is C++ code! C++ is required!
+    #error NOTE: Please, use C++ compilers instead C or other compilers!
+#elif __cplusplus <= 201103L
+    #error This code use features from C++14 standard! C++14 is required!
+    #error NOTE: Please, use C++ compilers with support C++14 standard!
+#endif // __cplusplus
+
+#if !(defined(__GNUC__) && defined(__GNUG__))
+    #error Your compiler not support GNU extensions!
+    #error NOTE: You must use the compiler with the GNU extensions!
+#endif
+
 #include <map>
 #include <deque>
 #include <algorithm>
@@ -85,9 +98,7 @@
 #endif // SERVER_IP
 
 #ifndef BUFFER_SIZE
-    //#define BUFFER_SIZE 2048
-    //#define BUFFER_SIZE 6
-    #define BUFFER_SIZE 200
+    #define BUFFER_SIZE 2048
 #endif // BUFFER_SIZE
 
 #ifndef POLL_TIMEOUT
@@ -98,7 +109,14 @@
     #define MAX_SOCKET_COUNT 200
 #endif // MAX_SOCKET_COUNT
 
+///
+///
+///
 namespace {
+
+///
+///
+///
 namespace config_ns {
     template<class PT, class AT>
     struct config {
@@ -236,23 +254,222 @@ private:
     struct sockaddr_in addr;
 };
 
+///
+/// \brief operator ==
+/// \param l
+/// \param r
+/// \return
+///
 inline bool operator==(addr_container const& l,
                        addr_container const& r) {
     return (l.addr.sin_addr.s_addr == r.addr.sin_addr.s_addr) &&
            (l.addr.sin_port == r.addr.sin_port);
 }
 
+///
+/// \brief operator <
+/// \param l
+/// \param r
+/// \return
+///
 inline bool operator<(addr_container const& l,
                       addr_container const& r) {
     return (l.addr.sin_addr.s_addr < r.addr.sin_addr.s_addr) &&
            (l.addr.sin_port < r.addr.sin_port);
 }
 
+///
+/// \brief operator >
+/// \param l
+/// \param r
+/// \return
+///
 inline bool operator>(addr_container const& l,
                       addr_container const& r) {
     return (l.addr.sin_addr.s_addr > r.addr.sin_addr.s_addr) &&
            (l.addr.sin_port > r.addr.sin_port);
 }
+
+///
+///
+///
+namespace mysql_packet_ns {
+
+typedef enum command_type {
+    COM_SLEEP            = 0x00,
+    COM_QUIT             = 0x01,
+    COM_INIT_DB          = 0x02,
+    COM_QUERY            = 0x03,
+    COM_FIELD_LIST       = 0x04,
+    COM_CREATE_DB        = 0x05,
+    COM_DROP_DB          = 0x06,
+    COM_REFRESH          = 0x07,
+    COM_SHUTDOWN         = 0x08,
+    COM_STATISTICS       = 0x09,
+    COM_PROCESS_INFO     = 0x0A,
+    COM_CONNECT          = 0x0B,
+    COM_PROCESS_KILL     = 0x0C,
+    COM_DEBUG            = 0x0D,
+    COM_PING             = 0x0E,
+    COM_TIME             = 0x0F,
+    COM_DELAY_INSERT     = 0x10,
+    COM_CHANGE_USER      = 0x11,
+    COM_RESET_CONNECTION = 0x1F,
+    COM_DAEMON           = 0x1D,
+    COM_END__
+} command_type_t;
+
+#ifdef DELETE_ALL_BY_DEFAULT_METHODS
+    #error Error! Redefinition DELETE_ALL_BY_DEFAULT_METHODS!
+#endif // DELETE_ALL_BY_DEFAULT_METHODS
+
+#define DELETE_ALL_BY_DEFAULT_METHODS(classname) \
+    classname(void) = delete; \
+    ~classname(void) = delete; \
+    classname(const classname&) = delete; \
+    classname(classname&&) = delete; \
+    classname& operator=(classname&&) = delete; \
+    classname& operator=(classname const&) = delete;
+
+typedef struct mysql_packet_payload_s {
+    unsigned char command[1];
+    unsigned char payload_data[1];
+    DELETE_ALL_BY_DEFAULT_METHODS(mysql_packet_payload_s)
+} __attribute__((packed)) mysql_packet_payload_t;
+
+typedef struct mysql_packet_header_s {
+    unsigned char payload_length[3];
+    unsigned char sequence_id[1];
+    DELETE_ALL_BY_DEFAULT_METHODS(mysql_packet_header_s)
+} __attribute__((packed)) mysql_packet_header_t;
+
+typedef struct mysql_packet_s {
+    mysql_packet_header_t hdr;
+    mysql_packet_payload_t payload;
+    DELETE_ALL_BY_DEFAULT_METHODS(mysql_packet_s)
+} __attribute__((packed)) mysql_packet_t;
+
+typedef struct packet_s {
+    struct sockaddr_in addr;
+    union {
+        char mypkt_start[1];
+        mysql_packet_t mypkt;
+    };
+    DELETE_ALL_BY_DEFAULT_METHODS(packet_s)
+} __attribute__((packed)) packet_t;
+
+typedef struct data_s {
+    union {
+        unsigned char raw[1];
+        packet_t packet;
+    } pkt;
+    DELETE_ALL_BY_DEFAULT_METHODS(data_s)
+} __attribute__((packed)) data_t;
+
+typedef size_t raw_data_size_t;
+
+class packet_handler : private boost::noncopyable {
+public:
+    constexpr packet_handler(unsigned char const* raw_data,
+                             size_t const raw_data_size) :
+        data(reinterpret_cast<data_t const*>(raw_data)),
+        data_size(static_cast<raw_data_size_t>(raw_data_size)) {
+    }
+
+    inline unsigned char const* get_start_raw_data(void) const noexcept {
+        return &this->data->pkt.raw[0];
+    }
+
+    inline unsigned char const* get_end_raw_data(void) const noexcept {
+        return &this->data->pkt.raw[this->data_size];
+    }
+
+    inline unsigned char const* get_raw_data(void) const noexcept {
+        return this->get_start_raw_data();
+    }
+
+    inline constexpr boost::uint16_t get_addr_len(void) const noexcept {
+        return sizeof(this->data->pkt.packet.addr);
+    }
+
+    inline struct sockaddr_in get_sockaddr(void) const noexcept {
+        return this->data->pkt.packet.addr;
+    }
+
+    inline char* get_address(void) const noexcept {
+        return ::inet_ntoa(this->data->pkt.packet.addr.sin_addr);
+    }
+
+    inline boost::uint16_t get_port(void) const noexcept {
+        return ::ntohs(this->data->pkt.packet.addr.sin_port);
+    }
+
+    inline unsigned char const* get_raw_mypkt(void) const noexcept {
+        return reinterpret_cast<unsigned char const*>(
+                    this->data->pkt.packet.mypkt_start);
+    }
+
+    inline boost::uint16_t get_sequence_id(void) const noexcept {
+        return static_cast<boost::uint16_t>(
+                    this->data->pkt.packet.mypkt.hdr.sequence_id[0]);
+    }
+
+    inline boost::uint16_t get_command(void) const noexcept {
+        return static_cast<boost::uint16_t>(
+                    this->data->pkt.packet.mypkt.payload.command[0]);
+    }
+
+    inline boost::uint32_t get_payload_len(void) const noexcept {
+        return static_cast<boost::uint32_t>(
+            (0x00FF0000 &
+                (this->data->pkt.packet.mypkt.hdr.payload_length[2] << 0x10)) |
+            (0x0000FF00 &
+                (this->data->pkt.packet.mypkt.hdr.payload_length[1] << 0x08)) |
+            (0x000000FF &
+                (this->data->pkt.packet.mypkt.hdr.payload_length[0] << 0x00)));
+    }
+
+    inline boost::uint32_t get_payload_data_len(void) const noexcept {
+        return this->get_payload_len() -
+                   sizeof(this->data->pkt.packet.mypkt.payload.command);
+    }
+
+    inline boost::uint32_t get_payload_data_len_in_packet(void) const noexcept {
+        boost::uint32_t useful_len = this->get_useful_data_len();
+        boost::uint32_t payload_data_len = this->get_payload_data_len();
+        return (payload_data_len >= useful_len) ? useful_len : payload_data_len;
+    }
+
+    inline boost::uint32_t get_underload_payload_data_len(void) const noexcept {
+        boost::uint32_t useful_len = this->get_useful_data_len();
+        boost::uint32_t payload_data_len = this->get_payload_data_len();
+        boost::int32_t underload_len = payload_data_len - useful_len;
+        return underload_len; //(>0 - underload; <0 - overload; 0 - ok)
+    }
+
+    inline unsigned char const* get_payload_data(void) const noexcept {
+        return this->data->pkt.packet.mypkt.payload.payload_data;
+    }
+
+    inline boost::uint32_t get_service_len(void) const noexcept {
+        return sizeof(this->data->pkt.packet) -
+               sizeof(this->data->pkt.packet.mypkt.payload.payload_data);
+    }
+
+    inline boost::uint32_t get_useful_data_len(void) const noexcept {
+        return (this->data_size - this->get_service_len());
+    }
+
+    packet_handler(packet_handler&&) = default;
+    packet_handler& operator=(packet_handler&&) = default;
+private:
+    data_t const* data;
+    raw_data_size_t data_size;
+};
+
+#undef DELETE_ALL_BY_DEFAULT_METHODS
+
+} // namespace mysql_packet_ns
 
 ///
 ///
@@ -321,6 +538,7 @@ public:
         client_counter_recv({}),
         server_counter_sent({}),
         server_counter_recv({}),
+        number(0),
         data({}),
         data_mutex(),
         logger(boost::bind(&self::logger_handler, this)) {
@@ -473,7 +691,9 @@ public:
     proxy& operator=(proxy&&) = delete;
     proxy& operator=(proxy const&) = delete;
 protected:
-    typedef std::map<addr_container, boost::int32_t> underloads_t;
+    typedef addr_container underloads_key_t;
+    typedef std::pair<boost::uint32_t, boost::uint8_t> underloads_value_t;
+    typedef std::map<underloads_key_t, underloads_value_t> underloads_t;
 
     typedef std::map<int, boost::uint32_t> counter_t;
 
@@ -866,6 +1086,15 @@ protected:
     void logger_handler(void) {
         std::ofstream log("log.txt", std::ofstream::out);
 
+        log << "#NUM:IP:PORT:(Len:XX;Seq:XX;Com:XX): \"SQL QUERY\"."
+            << std::endl
+            << "OR"
+            << std::endl
+            << "#NUM:IP:PORT:(continue): \"SQL QUERY\"."
+            << std::endl
+            << "-----------------------------------------------------"
+            << std::endl;
+
         do {
             data_value_container_t v;
 
@@ -903,15 +1132,18 @@ protected:
     /// \return
     ///
     inline bool is_underload(struct sockaddr_in const& addr,
-                             boost::int32_t& len) const {
-        addr_container a(addr);
-        auto res = this->underloads.find(a);
+                             boost::uint32_t& len, boost::uint8_t& com) const {
+        underloads_key_t k(addr);
+        auto res = this->underloads.find(k);
 
         if(res != this->underloads.end()) {
-            len = res->second;
+            underloads_value_t const& v = res->second;
+            len = v.first;
+            com = v.second;
             return true;
         }
         len = 0;
+        com = 0x00;
         return false;
     }
 
@@ -920,8 +1152,8 @@ protected:
     /// \param addr
     ///
     inline void set_no_underload(struct sockaddr_in const& addr) {
-        addr_container a(addr);
-        this->underloads.erase(a);
+        underloads_key_t k(addr);
+        this->underloads.erase(k);
     }
 
     ///
@@ -929,9 +1161,10 @@ protected:
     /// \param addr
     ///
     inline void set_yes_underload(struct sockaddr_in const& addr,
-                                  boost::int32_t len) {
-        addr_container a(addr);
-        this->underloads[a] = len;
+                                  boost::uint32_t len, boost::uint8_t com) {
+        underloads_key_t k(addr);
+        underloads_value_t v{len, com};
+        this->underloads[k] = std::move(v);
     }
 
     ///
@@ -943,162 +1176,91 @@ protected:
     inline void data_parser(std::ofstream& l,
                             unsigned char const* d,
                             size_t s) {
-        typedef struct packet_header_s {
-            struct sockaddr_in addr;
-            char payload_length[3];
-            char sequence_id[1];
-            char command[1];
-            char payload;
+        namespace mp = mysql_packet_ns;
 
-            constexpr inline boost::uint16_t get_addr_len(void)
-            const noexcept {
-                return sizeof(struct sockaddr_in);
+        bool cont = false;
+        boost::uint32_t under_len = 0;
+        boost::uint8_t command = 0x00;
+        unsigned char const* _start = nullptr;
+        unsigned char const* _end = nullptr;
+        mp::packet_handler packet(d, s);
+
+        _start = packet.get_raw_mypkt();
+
+        if(this->is_underload(packet.get_sockaddr(), under_len, command)) {
+            // We have underload data
+            boost::uint32_t data_size = s - packet.get_addr_len();
+            boost::int32_t new_under_len = under_len - data_size;
+            if(new_under_len > 0) {
+                // We have underload data again
+                this->set_yes_underload(packet.get_sockaddr(),
+                                        new_under_len, command);
+                _end = _start + data_size;
+            }
+            else {
+                // We haven't underload data
+                _end = _start + under_len;
+                this->set_no_underload(packet.get_sockaddr());
+                if(new_under_len < 0) {
+                    // We have new data in buffer
+                    this->send_to_logger_back(packet.get_sockaddr(),
+                                              _end, data_size - under_len);
+                }
             }
 
-            inline struct sockaddr_in get_sockaddr(void)
-            const noexcept {
-                return this->addr;
-            }
-
-            inline char* get_address(void)
-            const noexcept {
-                return inet_ntoa(this->addr.sin_addr);
-            }
-
-            inline boost::uint16_t get_port(void)
-            const noexcept {
-                return ntohs(this->addr.sin_port);
-            }
-
-            constexpr inline boost::uint16_t get_mysql_header_length(void)
-            const noexcept {
-                return 4;
-            }
-
-            inline boost::uint32_t get_payload_length(void)
-            const noexcept {
-                return (0x00FF0000 & (this->payload_length[2] << 0x10)) |
-                       (0x0000FF00 & (this->payload_length[1] << 0x08)) |
-                       (0x000000FF & (this->payload_length[0] << 0x00));
-            }
-
-            inline boost::uint16_t get_sequence_id(void)
-            const noexcept {
-                return static_cast<boost::uint16_t>(this->sequence_id[0]);
-            }
-
-            inline boost::uint16_t get_command(void)
-            const noexcept {
-                return static_cast<boost::uint16_t>(this->command[0]);
-            }
-
-            constexpr inline boost::uint32_t get_start_data(void)
-            const noexcept {
-                return sizeof(struct packet_header_s);
-            }
-
-            inline boost::uint32_t get_data_len(void)
-            const noexcept {
-                return this->get_payload_length() - sizeof(this->command);
-            }
-        } __attribute__((packed)) packet_header_t;
-
-        packet_header_t const* pkt_hdr =
-                reinterpret_cast<packet_header_t const*>(d);
-
-        bool flag_underload = false;
-        boost::int32_t under_len = 0;
-        boost::uint32_t _start = 0;
-        boost::uint32_t _end = 0;
-        boost::int32_t overunderload = 0; // Недополученные данные mysql
-        boost::int32_t useful_size = s - pkt_hdr->get_addr_len(); // Реальные данные
-        boost::int32_t useful_data_size = 0; // Реальные mysql данные
-        boost::int32_t output_data_size = 0; // Сколько данных выводится
-
-        // TODO!!! Проблема с одним байтом!!!
-        // Попробовать разнгые размеры буффера
-        if(this->is_underload(pkt_hdr->get_sockaddr(), under_len)) {
-            flag_underload = true;
-            _start = pkt_hdr->get_addr_len();
-
-            useful_data_size = useful_size;
-
-            overunderload = under_len + useful_data_size;
-
-            output_data_size = (overunderload < 0) ?
-                        useful_data_size :
-                        (useful_data_size - overunderload);
-
-            _end = pkt_hdr->get_addr_len() +
-                   output_data_size;
-
-            if(overunderload >= 0) {
-                this->set_no_underload(pkt_hdr->get_sockaddr());
-            }
+            cont = true;
         }
         else {
-            _start = pkt_hdr->get_start_data();
+            // We haven't underload data
+            boost::uint32_t len_for_send = packet.get_payload_data_len_in_packet();
+            _start = packet.get_payload_data();
+            _end = _start + len_for_send;
 
-            useful_data_size = useful_size - pkt_hdr->get_mysql_header_length();
+            command = static_cast<boost::uint8_t>(packet.get_command());
 
-            overunderload = useful_data_size - pkt_hdr->get_payload_length();
+            boost::int32_t underload = packet.get_underload_payload_data_len();
+            if(underload > 0) {
+                // Требуется ещё загрузить данные
+                this->set_yes_underload(packet.get_sockaddr(),
+                                        underload, command);
+            }
+            else if(underload < 0) {
+                // В буфере ещё есть данные
+                boost::uint32_t new_size = s - packet.get_service_len() - len_for_send;
+                this->send_to_logger_back(packet.get_sockaddr(),
+                                          _end, new_size);
+            }
 
-            output_data_size = (overunderload < 0) ?
-                        useful_data_size :
-                        (useful_data_size - overunderload);
-
-            _end = pkt_hdr->get_addr_len() +
-                   pkt_hdr->get_mysql_header_length() +
-                   output_data_size + 1;
+            cont = false;
         }
 
-        if(overunderload > 0) {
-            // Overload
-            // Данных пришло больше, чем у нас в mysql пакете.
-            // Надо отправить их обратно
-            this->send_to_logger_back(pkt_hdr->get_sockaddr(),
-                                      d + _end, s - _end);
-        }
-        else if(overunderload < 0) {
-            // Underload
-            this->set_yes_underload(pkt_hdr->get_sockaddr(),
-                                    (overunderload));
-        }
+        switch(command) {
+        case mp::COM_QUERY:
+            l << "#" << std::dec << number++ << ":"
+              << packet.get_address() << ":"
+              << std::dec << packet.get_port() << ":(";
 
-//        std::cout << "Underload: " << overunderload << std::endl;
-//        exit(0);
+            if(cont) {
+                l << "continue";
+            }
+            else {
+                l << "Len:" << std::dec << packet.get_payload_len() << ";"
+                  << "Seq:" << std::dec << packet.get_sequence_id() << ";"
+                  << "Com:" << "0x" << std::setfill('0') << std::setw(2)
+                  << std::uppercase << std::hex << packet.get_command();
+            }
 
-        if(flag_underload) {
-            std::cout          << pkt_hdr->get_address() << ":"
-                                << std::dec << pkt_hdr->get_port()
-                                << ": [" << _end - _start << "]: ";
+            l << "): \"";
+
+            std::for_each(_start, _end, [&l](auto x) {
+                l << x;
+            });
+
+            l << "\"."<< std::endl << std::flush;
+            break;
+        default:
+            break;
         }
-        else {
-            /*
-            l << pkt_hdr->get_address() << ":"
-              << std::dec << pkt_hdr->get_port()
-              << " ("
-              << "Len: " << std::dec << pkt_hdr->get_payload_length() << "; "
-              << "Seq: " << std::dec << pkt_hdr->get_sequence_id() << "; "
-              << "Command: " << std::hex << "0x" << pkt_hdr->get_command()
-              << "): ";
-*/
-            std::cout          << pkt_hdr->get_address() << ":"
-                                << std::dec << pkt_hdr->get_port()
-                                << " ("
-                                << "Len: " << std::dec << pkt_hdr->get_payload_length() << "; "
-                                << "Seq: " << std::dec << pkt_hdr->get_sequence_id() << "; "
-                                << "Command: " << std::hex << "0x" << pkt_hdr->get_command()
-                                << "): [" << _end - _start << "]: ";
-        }
-
-        std::for_each(d + _start, d + _end, [&l](auto x) {
-            l << x;
-            std::cout << x;
-        });
-
-        l << std::endl << std::flush;
-        std::cout << std::endl << std::flush;
     }
 private:
     struct sockaddr_in proxy_addr;
@@ -1123,6 +1285,8 @@ private:
 
     counter_t server_counter_sent;
     counter_t server_counter_recv;
+
+    boost::uint32_t number;
 
     data_t data;
     mutable std::mutex data_mutex;

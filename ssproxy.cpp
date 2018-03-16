@@ -401,7 +401,11 @@ public:
     }
 
     inline boost::uint16_t get_port(void) const noexcept {
+#ifdef __OPTIMIZE__
+        return ntohs(this->data->pkt.packet.addr.sin_port);
+#else
         return ::ntohs(this->data->pkt.packet.addr.sin_port);
+#endif // __OPTIMIZE__
     }
 
     inline unsigned char const* get_raw_mypkt(void) const noexcept {
